@@ -1,3 +1,4 @@
+'use client';
 import React, { useMemo, useState, useEffect, useCallback, memo } from "react";
 
 // Trip Expense Splitter – React single-file app (focus-safe)
@@ -234,7 +235,7 @@ export default function TripExpenseSplitter() {
         <section className="bg-white rounded-2xl shadow p-4 md:p-6">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Suggested settlements</h2>
-            <button onClick={() => navigator.clipboard.writeText(renderSettlementsText(settlements, people, currency))} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Copy summary</button>
+            <button onClick={() => copyToClipboard(renderSettlementsText(settlements, people, currency))} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Copy summary</button>
           </div>
           {settlements.length === 0 ? (
             <p className="mt-2 text-sm text-gray-600">All settled. Nobody owes anything. 🎉</p>
@@ -505,7 +506,30 @@ function computeSettlements(netByPerson: Record<ID, number>): Settlement[] {
 
 function renderSettlementsText(settlements: Settlement[], people: Person[], currency: (n: number) => string) {
   if (settlements.length === 0) return "All settled.";
-  return settlements.map((s) => `${labelFor(s.from, people)} → ${labelFor(s.to, people)}: ${currency(s.amount)}`).join("\n");
+  return settlements.map((s) => `${labelFor(s.from, people)} → ${labelFor(s.to, people)}: ${currency(s.amount)}`).join("
+");
+}
+
+// Robust clipboard (works on GitHub Pages, Safari, HTTP, etc.)
+function copyToClipboard(text: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+function fallbackCopy(text: string) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    alert('Summary copied!');
+  } catch {
+    alert('Could not copy to clipboard.');
+  }
+} → ${labelFor(s.to, people)}: ${currency(s.amount)}`).join("\n");
 }
 
 function applyTransfers(netByPerson: Record<ID, number>, transfers: Transfer[]): Record<ID, number> {
