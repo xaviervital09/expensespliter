@@ -1,0 +1,551 @@
+import React, { useMemo, useState, useEffect, useCallback, memo } from "react";
+
+// Trip Expense Splitter – React single-file app (focus-safe)
+// Fix: Inputs losing focus after every keystroke
+// - Extracted memoized row components (PeopleRow, ExpenseRow, TransferRow)
+// - Stable callbacks with useCallback so rows don't remount unnecessarily
+// - No change to math or tests
+
+export default function TripExpenseSplitter() {
+  // -------------------- State --------------------
+  const [people, setPeople] = useState<Person[]>([
+    { id: id(), name: "Xavier", shares: 1 },
+    { id: id(), name: "Roman", shares: 1 },
+    { id: id(), name: "Jorge", shares: 1 },
+  ]);
+
+  const [expenses, setExpenses] = useState<Expense[]>([
+    { id: id(), description: "10/20/2025 – Jorge transport weekend (Transportation)", amount: 1550.0, payerId: null },
+    { id: id(), description: "10/19/2025 – Casa blanca (Food & Drink)", amount: 44.46, payerId: null },
+    { id: id(), description: "10/19/2025 – Restaurant Zapote (Food & Drink)", amount: 175.6, payerId: null },
+    { id: id(), description: "10/16/2025 – BOCAO507 CASCO ANTIGUO (Food & Drink)", amount: 318.24, payerId: null },
+    { id: id(), description: "10/17/2025 – PLAZA CAUSEWAY (Food & Drink)", amount: 306.84, payerId: null },
+    { id: id(), description: "10/18/2025 – CANOPY LODGE (Travel)", amount: 390.0, payerId: null },
+    { id: id(), description: "10/17/2025 – CASA CASCO (Food & Drink)", amount: 222.89, payerId: null },
+    { id: id(), description: "10/18/2025 – RESTAURANTE LA CASA DE (Food & Drink)", amount: 371.19, payerId: null },
+    { id: id(), description: "10/17/2025 – CASA CATEDRAL (Food & Drink)", amount: 181.35, payerId: null },
+    { id: id(), description: "10/17/2025 – ACP MIRAFLORES CV (Shopping)", amount: 143.7, payerId: null },
+    { id: id(), description: "10/17/2025 – HOTEL LA COMPANIA (Travel)", amount: 246.57, payerId: null },
+  ]);
+
+  const [transfers, setTransfers] = useState<Transfer[]>([
+    { id: id(), from: null, to: null, amount: 700 }, // Roman → Xavier prepayment for transportation
+  ]);
+
+  // Default payer to first person (once people ready)
+  useEffect(() => {
+    setExpenses((prev) => prev.map((e) => (e.payerId == null && people[0] ? { ...e, payerId: people[0].id } : e)));
+  }, [people[0]?.id]);
+
+  // Map transfer names to IDs when people are ready
+  useEffect(() => {
+    const roman = people.find((p) => /roman/i.test(p.name))?.id ?? null;
+    const xavier = people.find((p) => /xavier/i.test(p.name))?.id ?? null;
+    setTransfers((prev) => prev.map((t) => ({ ...t, from: t.from ?? roman, to: t.to ?? xavier })));
+  }, [people]);
+
+  // -------------------- Derived --------------------
+  const totals = useMemo(() => computeTotals(people, expenses), [people, expenses]);
+  const adjustedNet = useMemo(() => applyTransfers(totals.netByPerson, transfers), [totals.netByPerson, transfers]);
+  const settlements = useMemo(() => computeSettlements(adjustedNet), [adjustedNet]);
+
+  const currency = useCallback((n: number) => new Intl.NumberFormat(undefined, { style: "currency", currency: guessCurrency() }).format(n), []);
+
+  // -------------------- Stable callbacks (prevent unnecessary remounts) --------------------
+  const onNewTrip = useCallback(() => {
+    setPeople([{ id: id(), name: "", shares: 1 }]);
+    setExpenses([{ id: id(), description: "", amount: 0, payerId: null }]);
+    setTransfers([]);
+  }, []);
+
+  const onAddPerson = useCallback(() => setPeople((prev) => [...prev, { id: id(), name: "", shares: 1 }]), []);
+  const onRemovePerson = useCallback((idVal: ID) => {
+    setPeople((prev) => prev.filter((p) => p.id !== idVal));
+    setExpenses((prev) => prev.map((e) => (e.payerId === idVal ? { ...e, payerId: null } : e)));
+  }, []);
+  const onDuplicatePerson = useCallback((p: Person) => setPeople((prev) => [...prev, { ...p, id: id(), name: `${p.name} (copy)` }]), []);
+  const onChangePersonName = useCallback((idVal: ID, name: string) => setPeople((prev) => prev.map((p) => (p.id === idVal ? { ...p, name } : p))), []);
+  const onChangePersonShares = useCallback((idVal: ID, shares: number) => setPeople((prev) => prev.map((p) => (p.id === idVal ? { ...p, shares } : p))), []);
+
+  const onAddExpense = useCallback((defaultPayerId?: ID | null) => setExpenses((prev) => [...prev, { id: id(), description: "", amount: 0, payerId: defaultPayerId ?? null }]), []);
+  const onRemoveExpense = useCallback((idVal: ID) => setExpenses((prev) => prev.filter((e) => e.id !== idVal)), []);
+  const onDuplicateExpense = useCallback((ex: Expense) => setExpenses((prev) => [...prev, { ...ex, id: id(), description: `${ex.description} (copy)` }]), []);
+  const onChangeExpense = useCallback((idVal: ID, patch: Partial<Expense>) => setExpenses((prev) => prev.map((e) => (e.id === idVal ? { ...e, ...patch } : e))), []);
+  const onChangeExpensePartyShare = useCallback((exId: ID, personId: ID, value: number) => setExpenses((prev) => prev.map((e) => {
+    if (e.id !== exId) return e;
+    const next = { ...(e.participants || {}) } as Record<ID, number>;
+    next[personId] = Math.max(0, value);
+    return { ...e, participants: next } as Expense;
+  })), []);
+
+  const onClearExpenses = useCallback(() => setExpenses([]), []);
+
+  const onAddTransfer = useCallback((from?: ID | null, to?: ID | null) => setTransfers((prev) => [...prev, { id: id(), from: from ?? null, to: to ?? null, amount: 0 }]), []);
+  const onRemoveTransfer = useCallback((idVal: ID) => setTransfers((prev) => prev.filter((t) => t.id !== idVal)), []);
+  const onDuplicateTransfer = useCallback((t: Transfer) => setTransfers((prev) => [...prev, { ...t, id: id() }]), []);
+  const onChangeTransfer = useCallback((idVal: ID, patch: Partial<Transfer>) => setTransfers((prev) => prev.map((t) => (t.id === idVal ? { ...t, ...patch } : t))), []);
+  const onClearTransfers = useCallback(() => setTransfers([]), []);
+
+  // -------------------- Self-tests (run once) --------------------
+  useEffect(() => { runSelfTests(); }, []);
+
+  // -------------------- UI --------------------
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900 p-6">
+      <div className="mx-auto max-w-6xl space-y-6">
+        <header className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">Trip Expense Splitter</h1>
+            <p className="text-sm text-gray-600">
+              Define people, add expenses, and we’ll compute who owes whom. Splits use <span className="font-medium">per-expense party shares</span>
+              when provided, otherwise global responsibility shares.
+            </p>
+          </div>
+          <button onClick={onNewTrip} className="px-3 py-2 rounded-xl bg-white shadow hover:shadow-md border text-sm" title="Start fresh">New trip</button>
+        </header>
+
+        {/* People */}
+        <section className="bg-white rounded-2xl shadow p-4 md:p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">People & Shares</h2>
+            <button onClick={onAddPerson} className="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-gray-800 text-sm">Add person</button>
+          </div>
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-3 text-sm font-medium text-gray-600">
+            <div className="md:col-span-6">Name</div>
+            <div className="md:col-span-3">Responsibility shares</div>
+            <div className="md:col-span-3">&nbsp;</div>
+          </div>
+          <div className="mt-2 space-y-2">
+            {people.map((p) => (
+              <PeopleRow key={p.id}
+                p={p}
+                onChangeName={onChangePersonName}
+                onChangeShares={onChangePersonShares}
+                onDuplicate={onDuplicatePerson}
+                onRemove={onRemovePerson}
+              />
+            ))}
+          </div>
+          <div className="mt-4 text-sm text-gray-600">Total global shares: <span className="font-medium text-gray-900">{sum(people.map((p) => Math.max(0, p.shares)))}</span></div>
+        </section>
+
+        {/* Expenses */}
+        <section className="bg-white rounded-2xl shadow p-4 md:p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Expenses</h2>
+            <div className="flex gap-2">
+              <button onClick={() => onAddExpense(people[0]?.id)} className="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-gray-800 text-sm">Add expense</button>
+              <button onClick={onClearExpenses} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Clear</button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-3 text-sm font-medium text-gray-600">
+            <div className="md:col-span-3">Description</div>
+            <div className="md:col-span-2">Amount</div>
+            <div className="md:col-span-2">Who paid?</div>
+            <div className="md:col-span-3">Party (shares per person)</div>
+            <div className="md:col-span-2">&nbsp;</div>
+          </div>
+
+          <div className="mt-2 space-y-2">
+            {expenses.map((ex) => (
+              <ExpenseRow key={ex.id}
+                ex={ex}
+                people={people}
+                onChangeExpense={onChangeExpense}
+                onChangePartyShare={onChangeExpensePartyShare}
+                onDuplicate={onDuplicateExpense}
+                onRemove={onRemoveExpense}
+              />
+            ))}
+          </div>
+
+          <div className="mt-4 text-sm text-gray-700 flex flex-wrap items-center gap-3">
+            <span className="font-medium">Trip total:</span>
+            <span className="px-2 py-1 rounded-lg bg-gray-100">{currency(totals.totalAmount)}</span>
+            <span className="text-gray-500">•</span>
+            <span className="font-medium">Per-share cost:</span>
+            <span className="px-2 py-1 rounded-lg bg-gray-100" title="Varies by expense party shares">—</span>
+          </div>
+        </section>
+
+        {/* Per-person summary */}
+        <section className="bg-white rounded-2xl shadow p-4 md:p-6">
+          <h2 className="text-lg font-semibold">Per-person breakdown</h2>
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-600">
+                  <th className="py-2 pr-4">Person</th>
+                  <th className="py-2 pr-4">Shares</th>
+                  <th className="py-2 pr-4">Paid</th>
+                  <th className="py-2 pr-4">Owes (share)</th>
+                  <th className="py-2 pr-4">Net (after transfers)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {people.map((p) => (
+                  <tr key={p.id} className="border-t">
+                    <td className="py-2 pr-4">{p.name || "(Unnamed)"}</td>
+                    <td className="py-2 pr-4">{p.shares}</td>
+                    <td className="py-2 pr-4">{currency(totals.paidByPerson[p.id] ?? 0)}</td>
+                    <td className="py-2 pr-4">{currency(totals.owedByPerson[p.id] ?? 0)}</td>
+                    <td className={`py-2 pr-4 font-medium ${((adjustedNet[p.id] ?? 0) >= 0) ? "text-green-700" : "text-red-700"}`}>
+                      {currency(adjustedNet[p.id] ?? 0)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* Transfers */}
+        <section className="bg-white rounded-2xl shadow p-4 md:p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Transfers (prepayments between people)</h2>
+            <div className="flex gap-2">
+              <button onClick={() => onAddTransfer(people[1]?.id, people[0]?.id)} className="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-gray-800 text-sm">Add transfer</button>
+              <button onClick={onClearTransfers} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Clear</button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-3 text-sm font-medium text-gray-600">
+            <div className="md:col-span-4">From</div>
+            <div className="md:col-span-4">To</div>
+            <div className="md:col-span-2">Amount</div>
+            <div className="md:col-span-2">&nbsp;</div>
+          </div>
+
+          <div className="mt-2 space-y-2">
+            {transfers.map((t) => (
+              <TransferRow key={t.id}
+                t={t}
+                people={people}
+                onChange={onChangeTransfer}
+                onDuplicate={onDuplicateTransfer}
+                onRemove={onRemoveTransfer}
+              />
+            ))}
+          </div>
+        </section>
+
+        {/* Settlements */}
+        <section className="bg-white rounded-2xl shadow p-4 md:p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Suggested settlements</h2>
+            <button onClick={() => navigator.clipboard.writeText(renderSettlementsText(settlements, people, currency))} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Copy summary</button>
+          </div>
+          {settlements.length === 0 ? (
+            <p className="mt-2 text-sm text-gray-600">All settled. Nobody owes anything. 🎉</p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {settlements.map((s, idx) => (
+                <li key={idx} className="flex items-center justify-between p-3 rounded-xl border bg-gray-50">
+                  <span>
+                    <span className="font-medium">{labelFor(s.from, people)}</span> owes <span className="font-medium">{labelFor(s.to, people)}</span>
+                  </span>
+                  <span className="font-semibold">{currency(s.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-4 text-sm text-gray-700">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-medium">Total owed (to settle):</span>
+              <span className="px-2 py-1 rounded-lg bg-gray-100">{currency(sum(settlements.map((s) => s.amount)))}</span>
+              <span className="text-gray-500">•</span>
+              <span className="font-medium">Check:</span>
+              <span className="px-2 py-1 rounded-lg bg-gray-100">{currency(totals.totalAmount)}</span>
+            </div>
+            <p className="mt-1 text-xs text-gray-500">(Transfers are applied before settlements to reflect prepayments like Roman → Xavier = {currency(700)}.)</p>
+          </div>
+        </section>
+
+        {/* Export / Import */}
+        <section className="bg-white rounded-2xl shadow p-4 md:p-6">
+          <h2 className="text-lg font-semibold">Save or load</h2>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm"
+              onClick={() => {
+                const blob = new Blob([JSON.stringify({ people, expenses, transfers }, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `trip-expenses-${new Date().toISOString().slice(0, 10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Export JSON
+            </button>
+
+            <label className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm cursor-pointer">
+              Import JSON
+              <input
+                type="file"
+                accept="application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const r = new FileReader();
+                  r.onload = () => {
+                    try {
+                      const data = JSON.parse(String(r.result ?? ""));
+                      if (Array.isArray(data.people) && Array.isArray(data.expenses)) {
+                        setPeople(sanitizePeople(data.people));
+                        setExpenses(sanitizeExpenses(data.expenses));
+                        setTransfers(sanitizeTransfers(data.transfers || []));
+                      } else {
+                        alert("Invalid file format.");
+                      }
+                    } catch {
+                      alert("Could not read JSON file.");
+                    }
+                  };
+                  r.readAsText(file);
+                }}
+              />
+            </label>
+          </div>
+        </section>
+
+        <footer className="text-center text-xs text-gray-500 py-6">
+          Built for quick splitting after trips. Per-expense party shares let you include only who participated.
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// -------------------- Row components (memoized) --------------------
+const PeopleRow = memo(function PeopleRow({ p, onChangeName, onChangeShares, onDuplicate, onRemove }: {
+  p: Person;
+  onChangeName: (id: ID, name: string) => void;
+  onChangeShares: (id: ID, shares: number) => void;
+  onDuplicate: (p: Person) => void;
+  onRemove: (id: ID) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+      <input
+        className="md:col-span-6 w-full rounded-xl border px-3 py-2"
+        placeholder="Name"
+        value={p.name}
+        onChange={(e) => onChangeName(p.id, e.target.value)}
+      />
+      <input
+        type="number"
+        min={0}
+        step={1}
+        className="md:col-span-3 w-full rounded-xl border px-3 py-2"
+        value={p.shares}
+        onChange={(e) => onChangeShares(p.id, toInt(e.target.value, 0))}
+      />
+      <div className="md:col-span-3 flex gap-2">
+        <button onClick={() => onDuplicate(p)} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50">Duplicate</button>
+        <button onClick={() => onRemove(p.id)} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-red-600">Remove</button>
+      </div>
+    </div>
+  );
+});
+
+const ExpenseRow = memo(function ExpenseRow({ ex, people, onChangeExpense, onChangePartyShare, onDuplicate, onRemove }: {
+  ex: Expense;
+  people: Person[];
+  onChangeExpense: (id: ID, patch: Partial<Expense>) => void;
+  onChangePartyShare: (exId: ID, personId: ID, value: number) => void;
+  onDuplicate: (ex: Expense) => void;
+  onRemove: (id: ID) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+        <input
+          className="md:col-span-3 w-full rounded-xl border px-3 py-2"
+          placeholder="e.g., Dinner, Hotel"
+          value={ex.description}
+          onChange={(e) => onChangeExpense(ex.id, { description: e.target.value })}
+        />
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          className="md:col-span-2 w-full rounded-xl border px-3 py-2"
+          value={ex.amount}
+          onChange={(e) => onChangeExpense(ex.id, { amount: toNumber(e.target.value, 0) })}
+        />
+        <select
+          className="md:col-span-2 w-full rounded-xl border px-3 py-2 bg-white"
+          value={ex.payerId ?? ""}
+          onChange={(e) => onChangeExpense(ex.id, { payerId: e.target.value || null })}
+        >
+          {people.length === 0 && <option value="">No people yet</option>}
+          {people.map((p) => (
+            <option key={p.id} value={p.id}>{p.name || "(Unnamed)"}</option>
+          ))}
+        </select>
+
+        {/* Party editor inline */}
+        <div className="md:col-span-3">
+          <div className="grid grid-cols-3 gap-2">
+            {people.map((p) => (
+              <div key={p.id} className="flex items-center gap-2">
+                <span className="text-xs w-14 truncate" title={p.name}>{p.name || "(Unnamed)"}</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="w-20 rounded-xl border px-2 py-1 text-sm"
+                  value={ex.participants?.[p.id] ?? 0}
+                  onChange={(e) => onChangePartyShare(ex.id, p.id, toInt(e.target.value, 0))}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="mt-1 text-xs text-gray-600">
+            Total party shares: <span className="font-medium">{sum(people.map((p) => ex.participants?.[p.id] ?? 0))}</span>
+          </div>
+        </div>
+
+        <div className="md:col-span-2 flex gap-2">
+          <button onClick={() => onDuplicate(ex)} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50">Duplicate</button>
+          <button onClick={() => onRemove(ex.id)} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-red-600">Remove</button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const TransferRow = memo(function TransferRow({ t, people, onChange, onDuplicate, onRemove }: {
+  t: Transfer;
+  people: Person[];
+  onChange: (id: ID, patch: Partial<Transfer>) => void;
+  onDuplicate: (t: Transfer) => void;
+  onRemove: (id: ID) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+      <select className="md:col-span-4 w-full rounded-xl border px-3 py-2 bg-white" value={t.from ?? ""} onChange={(e) => onChange(t.id, { from: e.target.value || null })}>
+        <option value="">—</option>
+        {people.map((p) => (<option key={p.id} value={p.id}>{p.name || "(Unnamed)"}</option>))}
+      </select>
+      <select className="md:col-span-4 w-full rounded-xl border px-3 py-2 bg-white" value={t.to ?? ""} onChange={(e) => onChange(t.id, { to: e.target.value || null })}>
+        <option value="">—</option>
+        {people.map((p) => (<option key={p.id} value={p.id}>{p.name || "(Unnamed)"}</option>))}
+      </select>
+      <input type="number" min={0} step={0.01} className="md:col-span-2 w-full rounded-xl border px-3 py-2" value={t.amount} onChange={(e) => onChange(t.id, { amount: toNumber(e.target.value, 0) })} />
+      <div className="md:col-span-2 flex gap-2">
+        <button onClick={() => onDuplicate(t)} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50">Duplicate</button>
+        <button onClick={() => onRemove(t.id)} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-red-600">Remove</button>
+      </div>
+    </div>
+  );
+});
+
+// -------------------- Types --------------------
+type ID = string;
+
+type Person = { id: ID; name: string; shares: number };
+
+type Expense = { id: ID; description: string; amount: number; payerId: ID | null; participants?: Record<ID, number> };
+
+type Settlement = { from: ID; to: ID; amount: number };
+
+type Transfer = { id: ID; from: ID | null; to: ID | null; amount: number };
+
+// -------------------- Helpers --------------------
+function id(): ID { return Math.random().toString(36).slice(2, 10); }
+function toNumber(v: string, fallback = 0): number { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
+function toInt(v: string, fallback = 0): number { const n = parseInt(v, 10); return Number.isFinite(n) ? n : fallback; }
+function sum(ns: number[]): number { return ns.reduce((a, b) => a + b, 0); }
+function round2(n: number): number { return Math.round(n * 100) / 100; }
+function guessCurrency(): string { try { const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }); return (fmt as any).resolvedOptions?.().currency || "USD"; } catch { return "USD"; } }
+function sanitizePeople(raw: any[]): Person[] { return raw.map((p) => ({ id: String(p.id || id()), name: String(p.name || ""), shares: Math.max(0, Number(p.shares ?? 1) || 0) })).filter((p) => p.name !== "" || p.shares > 0); }
+function sanitizeExpenses(raw: any[]): Expense[] { return raw.map((e) => ({ id: String(e.id || id()), description: String(e.description || ""), amount: Math.max(0, Number(e.amount || 0)), payerId: e.payerId ? String(e.payerId) : null, participants: sanitizeParticipants(e.participants) })).filter((e) => e.amount > 0); }
+function sanitizeParticipants(raw: any): Record<ID, number> | undefined { if (!raw || typeof raw !== "object") return undefined; const out: Record<ID, number> = {}; for (const [k, v] of Object.entries(raw)) out[String(k)] = Math.max(0, Number(v) || 0); return out; }
+
+function labelFor(idVal: ID, people: Person[]): string { const p = people.find((x) => x.id === idVal); return p?.name || "(Unknown)"; }
+
+// -------------------- Core calculations --------------------
+function computeTotals(people: Person[], expenses: Expense[]) {
+  const validPeople = people.filter((p) => p.shares > 0);
+  const totalAmount = sum(expenses.map((e) => Math.max(0, e.amount)));
+
+  // Paid totals
+  const paidByPerson: Record<ID, number> = {}; for (const p of people) paidByPerson[p.id] = 0;
+  for (const e of expenses) { if (e.payerId && paidByPerson[e.payerId] != null) paidByPerson[e.payerId] += Math.max(0, e.amount); }
+
+  // Owed totals (per-expense party shares if present; else fallback to global shares)
+  const owedByPerson: Record<ID, number> = {}; for (const p of people) owedByPerson[p.id] = 0;
+  for (const e of expenses) {
+    let hasAny = false; const expShares: Record<ID, number> = {};
+    for (const p of validPeople) { const s = Math.max(0, Number(e.participants?.[p.id] ?? 0)); if (s > 0) hasAny = true; expShares[p.id] = s; }
+    let totalShares = sum(Object.values(expShares));
+    if (!hasAny || totalShares <= 0) { totalShares = sum(validPeople.map((p) => p.shares)); for (const p of validPeople) expShares[p.id] = p.shares; }
+    const perShare = totalShares > 0 ? e.amount / totalShares : 0;
+    for (const p of validPeople) owedByPerson[p.id] += perShare * expShares[p.id];
+  }
+
+  const netByPerson: Record<ID, number> = {}; for (const p of people) netByPerson[p.id] = round2((paidByPerson[p.id] || 0) - (owedByPerson[p.id] || 0));
+  const totalShares = sum(validPeople.map((p) => p.shares));
+  return { totalShares, totalAmount: round2(totalAmount), paidByPerson, owedByPerson, netByPerson };
+}
+
+function computeSettlements(netByPerson: Record<ID, number>): Settlement[] {
+  const creditors: { id: ID; amt: number }[] = []; const debtors: { id: ID; amt: number }[] = [];
+  for (const [id, net] of Object.entries(netByPerson)) { if (net > 0.005) creditors.push({ id, amt: round2(net) }); else if (net < -0.005) debtors.push({ id, amt: round2(-net) }); }
+  creditors.sort((a, b) => b.amt - a.amt); debtors.sort((a, b) => b.amt - a.amt);
+  const res: Settlement[] = []; let i = 0, j = 0;
+  while (i < debtors.length && j < creditors.length) { const d = debtors[i]; const c = creditors[j]; const pay = round2(Math.min(d.amt, c.amt)); if (pay > 0) res.push({ from: d.id, to: c.id, amount: pay }); d.amt = round2(d.amt - pay); c.amt = round2(c.amt - pay); if (d.amt <= 0.005) i++; if (c.amt <= 0.005) j++; }
+  return res;
+}
+
+function renderSettlementsText(settlements: Settlement[], people: Person[], currency: (n: number) => string) {
+  if (settlements.length === 0) return "All settled.";
+  return settlements.map((s) => `${labelFor(s.from, people)} → ${labelFor(s.to, people)}: ${currency(s.amount)}`).join("\n");
+}
+
+function applyTransfers(netByPerson: Record<ID, number>, transfers: Transfer[]): Record<ID, number> {
+  const out: Record<ID, number> = { ...netByPerson };
+  for (const [id, v] of Object.entries(out)) out[id] = round2(v);
+  for (const tr of transfers) { const amt = Math.max(0, tr.amount || 0); if (!tr.from || !tr.to || tr.from === tr.to || amt <= 0) continue; out[tr.from] = round2((out[tr.from] ?? 0) + amt); out[tr.to] = round2((out[tr.to] ?? 0) - amt); }
+  return out;
+}
+
+function sanitizeTransfers(raw: any[]): Transfer[] {
+  return (Array.isArray(raw) ? raw : []).map((t) => ({ id: String(t.id || id()), from: t.from ? String(t.from) : null, to: t.to ? String(t.to) : null, amount: Math.max(0, Number(t.amount || 0)) }));
+}
+
+// -------------------- Self tests --------------------
+function runSelfTests() {
+  try {
+    // Test 1: Equal split among 3, one expense 90 paid by A
+    const A: Person = { id: "A", name: "A", shares: 1 };
+    const B: Person = { id: "B", name: "B", shares: 1 };
+    const C: Person = { id: "C", name: "C", shares: 1 };
+    const t1 = computeTotals([A, B, C], [{ id: "e", description: "", amount: 90, payerId: "A" }]);
+    assertClose(t1.owedByPerson["A"], 30); assertClose(t1.owedByPerson["B"], 30); assertClose(t1.owedByPerson["C"], 30);
+    assertClose(t1.netByPerson["A"], 60); assertClose(t1.netByPerson["B"], -30); assertClose(t1.netByPerson["C"], -30);
+    const s1 = computeSettlements(t1.netByPerson); expectTrue(s1.length === 2 && s1.some((x) => x.from === "B" && x.to === "A" && approx(x.amount, 30)) && s1.some((x) => x.from === "C" && x.to === "A" && approx(x.amount, 30)));
+
+    // Test 2: Per-expense party: only B & C attend, amount 100 paid by A
+    const e2: Expense = { id: "e2", description: "", amount: 100, payerId: "A", participants: { B: 1, C: 1 } };
+    const t2 = computeTotals([A, B, C], [e2]); assertClose(t2.owedByPerson["B"], 50); assertClose(t2.owedByPerson["C"], 50); assertClose(t2.owedByPerson["A"], 0); assertClose(t2.netByPerson["A"], 100); assertClose(t2.netByPerson["B"], -50); assertClose(t2.netByPerson["C"], -50);
+
+    // Test 3: Transfers reduce creditor by amount
+    const adj = applyTransfers(t2.netByPerson, [{ id: "t", from: "B", to: "A", amount: 20 }]); assertClose(adj["A"], 80); assertClose(adj["B"], -30);
+
+    // eslint-disable-next-line no-console
+    console.log("Self-tests passed ✅");
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("Self-tests failed ❌", err);
+  }
+}
+
+function approx(a: number, b: number, eps = 0.01) { return Math.abs(a - b) <= eps; }
+function assertClose(actual: number, expected: number) { if (!approx(actual, expected)) throw new Error(`Expected ${expected}, got ${actual}`); }
+function expectTrue(cond: boolean) { if (!cond) throw new Error("Assertion failed"); }
