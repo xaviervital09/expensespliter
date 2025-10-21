@@ -193,7 +193,78 @@
       }
     }
 
-    // -------------------- UI Components --------------------
+    // -------------------- Persistence & Reporting --------------------
+const STORAGE_KEY = "trip-expense-splitter.save.v1";
+
+function saveStateToLocalStorage(state, opts = {}) {
+  const { silent = false } = opts;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (!silent) alert("Changes saved locally.");
+  } catch {
+    if (!silent) alert("Couldn't save to this browser.");
+  }
+}
+function loadStateFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) { alert("No saved trip found."); return null; }
+    return JSON.parse(raw);
+  } catch {
+    alert("Saved data is unreadable.");
+    return null;
+  }
+}
+function clearSavedState() {
+  try { localStorage.removeItem(STORAGE_KEY); alert("Saved trip cleared."); } catch {}
+}
+
+function buildReportHTML({ people, expenses, totals, adjustedNet, settlements, currency }) {
+  const fmt = (n) => currency(n);
+  const today = new Date().toLocaleString();
+  const rowsPeople = people.map(p => `
+    <tr><td>${p.name || "(Unnamed)"}</td><td>${p.shares}</td><td>${fmt(totals.paidByPerson[p.id] || 0)}</td><td>${fmt(totals.owedByPerson[p.id] || 0)}</td><td>${fmt(adjustedNet[p.id] || 0)}</td></tr>
+  `).join("");
+  const rowsSettle = settlements.map(s => `<li>${labelFor(s.from, people)} → ${labelFor(s.to, people)}: <strong>${fmt(s.amount)}</strong></li>`).join("");
+  const rowsExp = expenses.map(e => `<tr><td>${e.description || ""}</td><td>${fmt(e.amount || 0)}</td><td>${labelFor(e.payerId, people)}</td></tr>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Trip Expense Report</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;padding:24px;line-height:1.5;color:#111}
+    h1,h2{margin:0 0 8px}
+    table{border-collapse:collapse;width:100%;margin:8px 0}
+    th,td{border:1px solid #e5e7eb;padding:8px;text-align:left}
+    .muted{color:#6b7280}
+    ul{margin:8px 0 0 16px}
+    .badge{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:4px 8px;display:inline-block}
+    @media print { .noprint{display:none} }
+  </style></head><body>
+  <div class="noprint" style="text-align:right"><button onclick="window.print()">Print</button></div>
+  <h1>Trip Expense Report</h1>
+  <div class="muted">Generated ${today}</div>
+  <h2>Summary</h2>
+  <div>Total spent: <span class="badge">${fmt(totals.totalAmount)}</span></div>
+  <h2>Per-person breakdown</h2>
+  <table><thead><tr><th>Person</th><th>Shares</th><th>Paid</th><th>Owes</th><th>Net</th></tr></thead>
+    <tbody>${rowsPeople}</tbody></table>
+  <h2>Suggested settlements</h2>
+  <ul>${rowsSettle || "<li>All settled.</li>"}</ul>
+  <h2>Expenses</h2>
+  <table><thead><tr><th>Description</th><th>Amount</th><th>Payer</th></tr></thead>
+    <tbody>${rowsExp}</tbody></table>
+  </body></html>`;
+}
+function printReport(people, expenses, totals, adjustedNet, settlements, currency) {
+  const html = buildReportHTML({ people, expenses, totals, adjustedNet, settlements, currency });
+  const w = window.open("", "_blank", "noopener,noreferrer");
+  if (!w) { alert("Pop-up blocked. Please allow pop-ups and try again."); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { try { w.print(); } catch {} }, 100);
+}
+
+// -------------------- UI Components --------------------
     function PeopleRow({ p, onChangeName, onChangeShares, onDuplicate, onRemove }) {
       return (
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
@@ -302,6 +373,25 @@
       const settlements = useMemo(() => computeSettlements(adjustedNet), [adjustedNet]);
 
       const currency = useCallback(n => new Intl.NumberFormat(undefined, { style: "currency", currency: guessCurrency() }).format(n), []);
+
+      // Save/Load & Print handlers + autosave
+      const onSaveNow = useCallback(() => saveStateToLocalStorage({ people, expenses, transfers }), [people, expenses, transfers]);
+      const onLoadSaved = useCallback(() => {
+        const data = loadStateFromLocalStorage();
+        if (!data) return;
+        if (Array.isArray(data.people) && Array.isArray(data.expenses)) {
+          setPeople(sanitizePeople(data.people));
+          setExpenses(sanitizeExpenses(data.expenses));
+          setTransfers(sanitizeTransfers(data.transfers || []));
+        } else {
+          alert("Saved data format is invalid.");
+        }
+      }, []);
+      const onClearSaved = useCallback(() => clearSavedState(), []);
+      const onPrint = useCallback(() => printReport(people, expenses, totals, adjustedNet, settlements, currency), [people, expenses, totals, adjustedNet, settlements, currency]);
+
+      // Autosave to localStorage (silent)
+      useEffect(() => { saveStateToLocalStorage({ people, expenses, transfers }, { silent: true }); }, [people, expenses, transfers]);
 
       // People callbacks
       const onNewTrip = useCallback(() => {
@@ -412,7 +502,7 @@
                     <th className="py-2 pr-4">Shares</th>
                     <th className="py-2 pr-4">Paid</th>
                     <th className="py-2 pr-4">Owes (share)</th>
-                    <th className="py-2 pr-4">Net (after transfers)</th>
+                    <th className={`py-2 pr-4`}>Net (after transfers)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -456,7 +546,10 @@
           <section className="bg-white rounded-2xl shadow p-4 md:p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Suggested settlements</h2>
-              <button onClick={() => copyToClipboard(renderSettlementsText(settlements, people, currency))} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Copy summary</button>
+              <div className="flex gap-2">
+                <button onClick={onPrint} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Print report</button>
+                <button onClick={() => copyToClipboard(renderSettlementsText(settlements, people, currency))} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm">Copy summary</button>
+              </div>
             </div>
 
             {settlements.length === 0 ? (
@@ -490,6 +583,9 @@
           <section className="bg-white rounded-2xl shadow p-4 md:p-6">
             <h2 className="text-lg font-semibold">Save or load</h2>
             <div className="mt-3 flex flex-wrap gap-2">
+              <button className="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-gray-800 text-sm" onClick={onSaveNow}>Save changes</button>
+              <button className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm" onClick={onLoadSaved}>Load last saved</button>
+              <button className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm" onClick={onClearSaved}>Clear saved</button>
               <button className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-50 text-sm" onClick={() => {
                 const blob = new Blob([JSON.stringify({ people, expenses, transfers }, null, 2)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
